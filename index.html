@@ -1,4 +1,3 @@
-<!-- Forcer GitHub Pages -->
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -161,7 +160,15 @@
             scanningComplete: false,
             cable: {
                 reel: { x: canvas.width / 2 - 120, y: canvas.height - 100 }
-            }
+            },
+            touch: {
+                active: false,
+                startX: 0,
+                startY: 0,
+                currentX: 0,
+                currentY: 0
+            },
+            isMobile: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
         };
 
         // Calculer la position du trou d'homme (20cm du bas = environ 1/5 de la hauteur)
@@ -255,14 +262,11 @@
             // Vérifier si le crawler est au sommet
             if (crawler.y <= tank.y + 30) {
                 gameState.atTop = true;
-                document.getElementById('warningLine').textContent = '> Sommet atteint! Activez l\'eau (ESPACE), puis lancé le scan (S)';
+                document.getElementById('warningLine').textContent = '> Sommet atteint! Activez l\'eau (ESPACE)';
             }
 
-            // Mise à jour du scanning
+            // Collecter les données d'épaisseur pendant le scan
             if (gameState.crawler.isScanning && gameState.crawler.waterActive) {
-                crawler.y += crawler.speed;
-                crawler.direction = 2; // Direction vers le bas
-
                 // Collecter les données d'épaisseur
                 if (Math.random() > 0.9) {
                     gameState.scanData.push({
@@ -442,21 +446,25 @@
         function drawCylindricalTank() {
             const tank = gameState.tank;
 
-            // Gradient pour l'effet cylindrique
+            // Gradient pour l'effet cylindrique en blanc/gris clair
             const gradient = ctx.createLinearGradient(tank.x, 0, tank.x + tank.width, 0);
-            gradient.addColorStop(0, '#6B5D4F');
-            gradient.addColorStop(0.2, '#8B7355');
-            gradient.addColorStop(0.5, '#A0826D');
-            gradient.addColorStop(0.8, '#8B7355');
-            gradient.addColorStop(1, '#6B5D4F');
+            gradient.addColorStop(0, '#d0d0d0');
+            gradient.addColorStop(0.2, '#e8e8e8');
+            gradient.addColorStop(0.5, '#ffffff');
+            gradient.addColorStop(0.8, '#e8e8e8');
+            gradient.addColorStop(1, '#d0d0d0');
 
             // Ombre du cylindre
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
             ctx.fillRect(tank.x + 20, tank.y + 20, tank.width, tank.height);
 
-            // Dessiner les plaques en quinconce
-            ctx.strokeStyle = '#4a4a4a';
-            ctx.lineWidth = 3;
+            // Fond blanc du bac
+            ctx.fillStyle = gradient;
+            ctx.fillRect(tank.x, tank.y, tank.width, tank.height);
+
+            // Dessiner les plaques en quinconce avec effet métallique
+            ctx.strokeStyle = '#999';
+            ctx.lineWidth = 2;
 
             let rowIndex = 0;
             for (let y = tank.y; y < tank.y + tank.height; y += tank.plateHeight) {
@@ -465,25 +473,29 @@
                 for (let i = 0; i < 3; i++) {
                     const x = tank.x + offset + i * tank.plateWidth - tank.plateWidth/2;
                     if (x >= tank.x - tank.plateWidth && x < tank.x + tank.width) {
-                        // Ajuster la largeur pour la dernière plaque si nécessaire
                         const plateWidth = Math.min(tank.plateWidth, tank.x + tank.width - x);
 
-                        // Couleur de la plaque avec variation
+                        // Effet de plaque métallique
                         const plateGradient = ctx.createLinearGradient(x, 0, x + plateWidth, 0);
-                        const brightness = 0.9 + Math.random() * 0.2;
-                        plateGradient.addColorStop(0, `rgba(139, 115, 85, ${brightness})`);
-                        plateGradient.addColorStop(0.5, `rgba(160, 130, 109, ${brightness})`);
-                        plateGradient.addColorStop(1, `rgba(139, 115, 85, ${brightness})`);
+                        plateGradient.addColorStop(0, '#e0e0e0');
+                        plateGradient.addColorStop(0.3, '#f5f5f5');
+                        plateGradient.addColorStop(0.7, '#f5f5f5');
+                        plateGradient.addColorStop(1, '#e0e0e0');
 
                         ctx.fillStyle = plateGradient;
                         ctx.fillRect(Math.max(tank.x, x), y, plateWidth, tank.plateHeight);
+                        ctx.strokeRect(Math.max(tank.x, x), y, plateWidth, tank.plateHeight);
 
-                        // Texture de rouille
-                        for (let j = 0; j < 5; j++) {
-                            ctx.fillStyle = `rgba(205, 87, 0, ${Math.random() * 0.3})`;
+                        // Reflets métalliques
+                        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+                        ctx.fillRect(Math.max(tank.x, x) + 10, y + 10, plateWidth - 20, 2);
+
+                        // Traces d'usure légères
+                        for (let j = 0; j < 3; j++) {
+                            ctx.fillStyle = `rgba(100, 100, 100, ${Math.random() * 0.1})`;
                             const rustX = Math.max(tank.x, x) + Math.random() * plateWidth;
                             const rustY = y + Math.random() * tank.plateHeight;
-                            ctx.fillRect(rustX, rustY, 5 + Math.random() * 10, 5 + Math.random() * 10);
+                            ctx.fillRect(rustX, rustY, 3 + Math.random() * 5, 3 + Math.random() * 5);
                         }
                     }
                 }
@@ -492,7 +504,7 @@
 
             // Dessiner les soudures
             for (let line of gameState.weldLines) {
-                ctx.strokeStyle = '#3a3a3a';
+                ctx.strokeStyle = '#666';
                 ctx.lineWidth = 4;
                 ctx.beginPath();
                 ctx.moveTo(line.x1, line.y1);
@@ -500,7 +512,7 @@
                 ctx.stroke();
 
                 // Effet de soudure
-                ctx.strokeStyle = '#5a5a5a';
+                ctx.strokeStyle = '#888';
                 ctx.lineWidth = 2;
                 ctx.beginPath();
                 ctx.moveTo(line.x1, line.y1);
@@ -511,14 +523,29 @@
             // Dessiner le trou d'homme
             drawManHole();
 
-            // Bords du cylindre
-            ctx.strokeStyle = '#4a4a4a';
+            // Bords du cylindre avec effet 3D
+            ctx.strokeStyle = '#aaa';
             ctx.lineWidth = 4;
             ctx.beginPath();
             ctx.moveTo(tank.x, tank.y);
             ctx.lineTo(tank.x, tank.y + tank.height);
             ctx.moveTo(tank.x + tank.width, tank.y);
             ctx.lineTo(tank.x + tank.width, tank.y + tank.height);
+            ctx.stroke();
+
+            // Ellipse supérieure pour effet cylindrique
+            ctx.fillStyle = '#f0f0f0';
+            ctx.beginPath();
+            ctx.ellipse(tank.x + tank.width/2, tank.y, tank.width/2, 15, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#999';
+            ctx.stroke();
+
+            // Ellipse inférieure
+            ctx.fillStyle = '#e0e0e0';
+            ctx.beginPath();
+            ctx.ellipse(tank.x + tank.width/2, tank.y + tank.height, tank.width/2, 15, 0, Math.PI, Math.PI * 2);
+            ctx.fill();
             ctx.stroke();
         }
 
@@ -798,7 +825,7 @@
 
             // Interface du logiciel
             ctx.fillStyle = '#00ff00';
-            ctx.font = '5px monospace';
+            ctx.font = '8px monospace';
             ctx.fillText('CRAWLER CONTROL v2.1', x + 8, y - 15);
             ctx.fillText('Status: CONNECTED', x + 8, y - 5);
             ctx.fillText('Thickness: SCANNING...', x + 8, y + 5);
@@ -835,16 +862,18 @@
         window.addEventListener('keydown', (e) => {
             keys[e.key] = true;
 
-            if (e.key === ' ' && gameState.atTop && !gameState.crawler.waterActive) {
+            if (e.key === ' ' && gameState.atTop) {
                 e.preventDefault();
-                gameState.crawler.waterActive = true;
-                document.getElementById('warningLine').textContent = '> Eau activée! Appuyez sur S pour scanner';
+                gameState.crawler.waterActive = !gameState.crawler.waterActive;
+                document.getElementById('warningLine').textContent = gameState.crawler.waterActive ?
+                    '> Eau activée! Appuyez sur S pour scanner' : '> Eau désactivée';
             }
 
-            if (e.key.toLowerCase() === 's' && gameState.crawler.waterActive && !gameState.crawler.isScanning) {
+            if (e.key.toLowerCase() === 's' && gameState.crawler.waterActive) {
                 e.preventDefault();
-                gameState.crawler.isScanning = true;
-                document.getElementById('warningLine').textContent = '> Scan en cours...';
+                gameState.crawler.isScanning = !gameState.crawler.isScanning;
+                document.getElementById('warningLine').textContent = gameState.crawler.isScanning ?
+                    '> Scan en cours...' : '> Scan arrêté';
             }
         });
 
@@ -852,27 +881,191 @@
             keys[e.key] = false;
         });
 
+        // Contrôles tactiles pour mobile
+        if (gameState.isMobile) {
+            // Ajouter les boutons de contrôle mobile
+            const mobileControls = document.createElement('div');
+            mobileControls.id = 'mobileControls';
+            mobileControls.style.cssText = `
+                position: absolute;
+                bottom: 20px;
+                left: 20px;
+                z-index: 100;
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+            `;
+
+            // Joystick directionnel
+            const joystick = document.createElement('div');
+            joystick.style.cssText = `
+                width: 150px;
+                height: 150px;
+                background: rgba(0, 0, 0, 0.5);
+                border: 2px solid #00ff00;
+                border-radius: 50%;
+                position: relative;
+                touch-action: none;
+            `;
+
+            const joystickKnob = document.createElement('div');
+            joystickKnob.style.cssText = `
+                width: 50px;
+                height: 50px;
+                background: #00ff00;
+                border-radius: 50%;
+                position: absolute;
+                top: 50px;
+                left: 50px;
+                transition: none;
+                touch-action: none;
+            `;
+
+            joystick.appendChild(joystickKnob);
+            mobileControls.appendChild(joystick);
+
+            // Boutons d'action
+            const actionButtons = document.createElement('div');
+            actionButtons.style.cssText = `
+                position: absolute;
+                bottom: 20px;
+                right: 20px;
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+                z-index: 100;
+            `;
+
+            const waterBtn = document.createElement('button');
+            waterBtn.textContent = 'EAU';
+            waterBtn.style.cssText = `
+                width: 80px;
+                height: 80px;
+                background: #0066ff;
+                color: white;
+                border: none;
+                border-radius: 50%;
+                font-size: 16px;
+                font-weight: bold;
+            `;
+
+            const scanBtn = document.createElement('button');
+            scanBtn.textContent = 'SCAN';
+            scanBtn.style.cssText = `
+                width: 80px;
+                height: 80px;
+                background: #ff6600;
+                color: white;
+                border: none;
+                border-radius: 50%;
+                font-size: 16px;
+                font-weight: bold;
+            `;
+
+            actionButtons.appendChild(waterBtn);
+            actionButtons.appendChild(scanBtn);
+
+            document.body.appendChild(mobileControls);
+            document.body.appendChild(actionButtons);
+
+            // Gestion du joystick
+            let joystickActive = false;
+            let joystickCenter = { x: 75, y: 75 };
+
+            function handleJoystickMove(x, y) {
+                const rect = joystick.getBoundingClientRect();
+                const centerX = rect.left + joystickCenter.x;
+                const centerY = rect.top + joystickCenter.y;
+
+                let deltaX = x - centerX;
+                let deltaY = y - centerY;
+
+                const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+                const maxDistance = 60;
+
+                if (distance > maxDistance) {
+                    deltaX = (deltaX / distance) * maxDistance;
+                    deltaY = (deltaY / distance) * maxDistance;
+                }
+
+                joystickKnob.style.left = (joystickCenter.x + deltaX - 25) + 'px';
+                joystickKnob.style.top = (joystickCenter.y + deltaY - 25) + 'px';
+
+                // Déplacer le crawler
+                const threshold = 20;
+                if (Math.abs(deltaX) > threshold) {
+                    gameState.crawler.x += (deltaX / maxDistance) * gameState.crawler.speed * 2;
+                    gameState.crawler.direction = deltaX > 0 ? 1 : 3;
+                }
+                if (Math.abs(deltaY) > threshold) {
+                    gameState.crawler.y += (deltaY / maxDistance) * gameState.crawler.speed * 2;
+                    if (!gameState.crawler.isScanning) {
+                        gameState.crawler.direction = deltaY > 0 ? 2 : 0;
+                    }
+                }
+            }
+
+            joystick.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                joystickActive = true;
+            });
+
+            joystick.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                if (joystickActive) {
+                    handleJoystickMove(e.touches[0].clientX, e.touches[0].clientY);
+                }
+            });
+
+            joystick.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                joystickActive = false;
+                joystickKnob.style.left = '50px';
+                joystickKnob.style.top = '50px';
+            });
+
+            // Boutons d'action
+            waterBtn.addEventListener('click', () => {
+                if (gameState.atTop) {
+                    gameState.crawler.waterActive = !gameState.crawler.waterActive;
+                    waterBtn.style.background = gameState.crawler.waterActive ? '#00ff00' : '#0066ff';
+                    document.getElementById('warningLine').textContent = gameState.crawler.waterActive ?
+                        '> Eau activée!' : '> Eau désactivée';
+                }
+            });
+
+            scanBtn.addEventListener('click', () => {
+                if (gameState.crawler.waterActive) {
+                    gameState.crawler.isScanning = !gameState.crawler.isScanning;
+                    scanBtn.style.background = gameState.crawler.isScanning ? '#00ff00' : '#ff6600';
+                    document.getElementById('warningLine').textContent = gameState.crawler.isScanning ?
+                        '> Scan en cours...' : '> Scan arrêté';
+                }
+            });
+        }
+
         // Mouvement du crawler
         function handleMovement() {
             if (gameState.gameOver) return;
 
             const crawler = gameState.crawler;
 
+            // Mouvement manuel même pendant le scan
             if (keys['ArrowUp']) {
                 crawler.y -= crawler.speed;
-                crawler.direction = 0;
+                if (!crawler.isScanning) crawler.direction = 0;
             }
             if (keys['ArrowDown']) {
                 crawler.y += crawler.speed;
-                crawler.direction = 2;
+                crawler.direction = 2; // Toujours en marche arrière vers le bas
             }
             if (keys['ArrowLeft']) {
                 crawler.x -= crawler.speed;
-                crawler.direction = 3;
+                if (!crawler.isScanning) crawler.direction = 3;
             }
             if (keys['ArrowRight']) {
                 crawler.x += crawler.speed;
-                crawler.direction = 1;
+                if (!crawler.isScanning) crawler.direction = 1;
             }
         }
 
