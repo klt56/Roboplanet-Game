@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crawler Magnétique - Inspection Industrielle</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: #1a1a1a;
+            color: #00ff00;
+            overflow: hidden;
+            position: relative;
+        }
+
+        #gameCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            background: #1a1a1a;
+            cursor: none;
+        }
+
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border: 2px solid #00ff00;
+            border-radius: 5px;
+            font-size: 14px;
+            z-index: 10;
+        }
+
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border: 2px solid #00ff00;
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 10;
+        }
+
+        #gameOver {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            padding: 30px;
+            border: 3px solid #ff0000;
+            border-radius: 10px;
+            text-align: center;
+            display: none;
+            z-index: 20;
+        }
+
+        #gameOver h2 {
+            color: #ff0000;
+            margin-bottom: 20px;
+        }
+
+        #restartBtn {
+            padding: 10px 20px;
+            background: #00ff00;
+            color: #000;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+        }
+
+        #restartBtn:hover {
+            background: #00cc00;
+        }
+
+        .warning {
+            color: #ffff00;
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0.3; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="hud">
+        <h3>SYSTÈME DE CONTRÔLE</h3>
+        <div class="status-line">Position: <span id="position">0m</span></div>
+        <div class="status-line">Hauteur: <span id="height">0m</span></div>
+        <div class="status-line">Eau: <span id="water">INACTIVE</span></div>
+        <div class="status-line">Scanner: <span id="scanner">INACTIF</span></div>
+        <div class="status-line">Épaisseur: <span id="thickness">--mm</span></div>
+        <div class="status-line">Progression: <span id="progress">0%</span></div>
+        <div class="status-line warning" id="warningLine"></div>
+    </div>
+
+    <div id="controls">
+        <h4>CONTRÔLES</h4>
+        <div>↑↓←→ : Déplacer</div>
+        <div>ESPACE : Activer l'eau</div>
+        <div>S : Scanner (descente)</div>
+    </div>
+
+    <div id="gameOver">
+        <h2>MISSION ÉCHOUÉE</h2>
+        <p>Le crawler est tombé!</p>
+        <button id="restartBtn">REDÉMARRER</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // État du jeu
+        let gameState = {
+            crawler: {
+                x: canvas.width / 2,
+                y: canvas.height - 200,
+                width: 50,
+                height: 40,
+                speed: 2,
+                isScanning: false,
+                waterActive: false,
+                direction: 0 // 0: up, 1: right, 2: down, 3: left
+            },
+            tank: {
+                x: canvas.width / 2 - 250,
+                y: 80,
+                width: 500,
+                height: canvas.height - 280,
+                radius: 250, // Pour l'effet cylindrique
+                plateWidth: 166, // Largeur des plaques pour avoir 3 colonnes
+                plateHeight: 80, // Hauteur des plaques
+                manHoleY: 0 // Position du trou d'homme
+            },
+            weldLines: [],
+            scanData: [],
+            missionProgress: 0,
+            gameOver: false,
+            atTop: false,
+            scanningComplete: false,
+            cable: {
+                reel: { x: canvas.width / 2 - 120, y: canvas.height - 100 }
+            }
+        };
+
+        // Calculer la position du trou d'homme (20cm du bas = environ 1/5 de la hauteur)
+        gameState.tank.manHoleY = gameState.tank.y + gameState.tank.height - (gameState.tank.height / 5);
+
+        // Génération des lignes de soudure en quinconce
+        function generateWeldLines() {
+            gameState.weldLines = [];
+            const tank = gameState.tank;
+
+            let rowIndex = 0;
+            for (let y = tank.y; y < tank.y + tank.height - tank.plateHeight; y += tank.plateHeight) {
+                // Lignes horizontales (toute la largeur)
+                gameState.weldLines.push({
+                    x1: tank.x,
+                    y1: y + tank.plateHeight,
+                    x2: tank.x + tank.width,
+                    y2: y + tank.plateHeight,
+                    type: 'horizontal'
+                });
+
+                // Lignes verticales en quinconce
+                const offset = (rowIndex % 2) * (tank.plateWidth / 2);
+                for (let i = 0; i < 3; i++) {
+                    const x = tank.x + offset + i * tank.plateWidth;
+                    if (x < tank.x + tank.width - 10) {
+                        gameState.weldLines.push({
+                            x1: x,
+                            y1: y,
+                            x2: x,
+                            y2: y + tank.plateHeight,
+                            type: 'vertical'
+                        });
+                    }
+                }
+                rowIndex++;
+            }
+        }
+
+        // Vérification des collisions avec les CROISEMENTS de soudures et le trou d'homme
+        function checkWeldCollision() {
+            const crawler = gameState.crawler;
+            const tolerance = 20;
+
+            // Vérifier les intersections (croisements)
+            for (let hLine of gameState.weldLines.filter(l => l.type === 'horizontal')) {
+                for (let vLine of gameState.weldLines.filter(l => l.type === 'vertical')) {
+                    // Point d'intersection
+                    const intersectX = vLine.x1;
+                    const intersectY = hLine.y1;
+
+                    // Vérifier si le crawler est sur un croisement
+                    const crawlerCenterX = crawler.x + crawler.width / 2;
+                    const crawlerCenterY = crawler.y + crawler.height / 2;
+
+                    if (Math.abs(crawlerCenterX - intersectX) < tolerance &&
+                        Math.abs(crawlerCenterY - intersectY) < tolerance) {
+                        return true;
+                    }
+                }
+            }
+
+            // Vérifier collision avec le trou d'homme
+            const tank = gameState.tank;
+            const holeX = tank.x + tank.width / 2;
+            const holeY = gameState.tank.manHoleY;
+            const holeRadius = 30;
+
+            const crawlerCenterX = crawler.x + crawler.width / 2;
+            const crawlerCenterY = crawler.y + crawler.height / 2;
+
+            const distance = Math.sqrt(
+                Math.pow(crawlerCenterX - holeX, 2) +
+                Math.pow(crawlerCenterY - holeY, 2)
+            );
+
+            if (distance < holeRadius + 10) {
+                return true;
+            }
+
+            return false;
+        }
+
+        // Mise à jour du jeu
+        function update() {
+            if (gameState.gameOver) return;
+
+            const crawler = gameState.crawler;
+            const tank = gameState.tank;
+
+            // Vérifier si le crawler est au sommet
+            if (crawler.y <= tank.y + 30) {
+                gameState.atTop = true;
+                document.getElementById('warningLine').textContent = '> Sommet atteint! Activez l\'eau (ESPACE), puis lancé le scan (S)';
+            }
+
+            // Mise à jour du scanning
+            if (gameState.crawler.isScanning && gameState.crawler.waterActive) {
+                crawler.y += crawler.speed;
+                crawler.direction = 2; // Direction vers le bas
+
+                // Collecter les données d'épaisseur
+                if (Math.random() > 0.9) {
+                    gameState.scanData.push({
+                        position: crawler.y,
+                        thickness: 8 + Math.random() * 4
+                    });
+                }
+
+                // Vérifier si le scan est terminé
+                if (crawler.y >= tank.y + tank.height - 50) {
+                    gameState.scanningComplete = true;
+                    gameState.crawler.isScanning = false;
+                    document.getElementById('warningLine').textContent = '> MISSION ACCOMPLIE!';
+                }
+            }
+
+            // Vérifier les collisions
+            if (checkWeldCollision()) {
+                gameState.gameOver = true;
+                document.getElementById('gameOver').style.display = 'block';
+            }
+
+            // Limiter le crawler dans le bac
+            crawler.x = Math.max(tank.x + 20, Math.min(crawler.x, tank.x + tank.width - crawler.width - 20));
+            crawler.y = Math.max(tank.y + 10, Math.min(crawler.y, tank.y + tank.height - crawler.height - 10));
+
+            updateHUD();
+        }
+
+        // Mise à jour de l'interface
+        function updateHUD() {
+            const crawler = gameState.crawler;
+            const tank = gameState.tank;
+
+            document.getElementById('position').textContent = `${Math.round(crawler.x)}px`;
+            document.getElementById('height').textContent = `${Math.round(tank.y + tank.height - crawler.y)}px`;
+            document.getElementById('water').textContent = crawler.waterActive ? 'ACTIVE' : 'INACTIVE';
+            document.getElementById('scanner').textContent = crawler.isScanning ? 'ACTIF' : 'INACTIF';
+
+            if (gameState.scanData.length > 0) {
+                const lastScan = gameState.scanData[gameState.scanData.length - 1];
+                document.getElementById('thickness').textContent = `${lastScan.thickness.toFixed(1)}mm`;
+            }
+
+            const progress = gameState.scanningComplete ? 100 :
+                          Math.round((gameState.scanData.length / 20) * 100);
+            document.getElementById('progress').textContent = `${progress}%`;
+        }
+
+        // Rendu du jeu
+        function render() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Dessiner l'environnement industriel
+            drawIndustrialEnvironment();
+
+            // Dessiner le bac de stockage cylindrique
+            drawCylindricalTank();
+
+            // Dessiner le câble ombilical
+            drawCable();
+
+            // Dessiner le touret
+            drawReel();
+
+            // Dessiner le crawler
+            drawCrawler();
+
+            // Dessiner l'eau si active
+            if (gameState.crawler.waterActive) {
+                drawWater();
+            }
+
+            // Dessiner l'opérateur et l'équipement
+            drawOperator();
+        }
+
+        function drawIndustrialEnvironment() {
+            // Ciel industriel
+            const skyGradient = ctx.createLinearGradient(0, 0, 0, canvas.height * 0.4);
+            skyGradient.addColorStop(0, '#87CEEB');
+            skyGradient.addColorStop(0.5, '#B0C4DE');
+            skyGradient.addColorStop(1, '#D3D3D3');
+            ctx.fillStyle = skyGradient;
+            ctx.fillRect(0, 0, canvas.width, canvas.height * 0.4);
+
+            // Nuages industriels
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+            for (let i = 0; i < 5; i++) {
+                const x = 100 + i * 200 + Math.sin(Date.now() * 0.0001 + i) * 20;
+                const y = 30 + i * 20;
+                ctx.beginPath();
+                ctx.arc(x, y, 30, 0, Math.PI * 2);
+                ctx.arc(x + 25, y, 35, 0, Math.PI * 2);
+                ctx.arc(x + 50, y, 30, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Sol industriel
+            const groundY = canvas.height * 0.75;
+            ctx.fillStyle = '#4a4a4a';
+            ctx.fillRect(0, groundY, canvas.width, canvas.height - groundY);
+
+            // Texture du sol
+            ctx.fillStyle = '#3a3a3a';
+            for (let x = 0; x < canvas.width; x += 50) {
+                ctx.fillRect(x, groundY, 2, canvas.height - groundY);
+            }
+
+            // Bacs en arrière-plan (gauche)
+            drawBackgroundTank(100, groundY - 300, 150, 300, 0.4);
+
+            // Bacs en arrière-plan (droite)
+            drawBackgroundTank(canvas.width - 250, groundY - 350, 180, 350, 0.5);
+
+            // Structure industrielle au loin
+            ctx.fillStyle = 'rgba(60, 60, 60, 0.3)';
+            ctx.fillRect(300, groundY - 400, 80, 400);
+            ctx.fillRect(320, groundY - 450, 40, 50);
+
+            // Tuyauterie
+            ctx.strokeStyle = 'rgba(80, 80, 80, 0.4)';
+            ctx.lineWidth = 8;
+            ctx.beginPath();
+            ctx.moveTo(0, groundY - 200);
+            ctx.lineTo(200, groundY - 200);
+            ctx.lineTo(200, groundY - 350);
+            ctx.lineTo(380, groundY - 350);
+            ctx.stroke();
+
+            // Passerelle métallique
+            ctx.fillStyle = 'rgba(70, 70, 70, 0.3)';
+            ctx.fillRect(200, groundY - 250, 180, 10);
+
+            // Garde-corps
+            ctx.strokeStyle = 'rgba(90, 90, 90, 0.3)';
+            ctx.lineWidth = 2;
+            for (let x = 200; x < 380; x += 20) {
+                ctx.beginPath();
+                ctx.moveTo(x, groundY - 250);
+                ctx.lineTo(x, groundY - 280);
+                ctx.stroke();
+            }
+        }
+
+        function drawBackgroundTank(x, y, width, height, opacity) {
+            ctx.save();
+            ctx.globalAlpha = opacity;
+
+            // Corps du bac
+            const gradient = ctx.createLinearGradient(x, 0, x + width, 0);
+            gradient.addColorStop(0, '#5a5a5a');
+            gradient.addColorStop(0.5, '#7a7a7a');
+            gradient.addColorStop(1, '#5a5a5a');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(x, y, width, height);
+
+            // Lignes de structure
+            ctx.strokeStyle = '#4a4a4a';
+            ctx.lineWidth = 2;
+            for (let i = 1; i < 4; i++) {
+                ctx.beginPath();
+                ctx.moveTo(x, y + (height / 4) * i);
+                ctx.lineTo(x + width, y + (height / 4) * i);
+                ctx.stroke();
+            }
+
+            // Sommet du bac
+            ctx.fillStyle = '#6a6a6a';
+            ctx.beginPath();
+            ctx.ellipse(x + width/2, y, width/2, 20, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.restore();
+        }
+
+        function drawCylindricalTank() {
+            const tank = gameState.tank;
+
+            // Gradient pour l'effet cylindrique
+            const gradient = ctx.createLinearGradient(tank.x, 0, tank.x + tank.width, 0);
+            gradient.addColorStop(0, '#6B5D4F');
+            gradient.addColorStop(0.2, '#8B7355');
+            gradient.addColorStop(0.5, '#A0826D');
+            gradient.addColorStop(0.8, '#8B7355');
+            gradient.addColorStop(1, '#6B5D4F');
+
+            // Ombre du cylindre
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+            ctx.fillRect(tank.x + 20, tank.y + 20, tank.width, tank.height);
+
+            // Dessiner les plaques en quinconce
+            ctx.strokeStyle = '#4a4a4a';
+            ctx.lineWidth = 3;
+
+            let rowIndex = 0;
+            for (let y = tank.y; y < tank.y + tank.height; y += tank.plateHeight) {
+                const offset = (rowIndex % 2) * (tank.plateWidth / 2);
+
+                for (let i = 0; i < 3; i++) {
+                    const x = tank.x + offset + i * tank.plateWidth - tank.plateWidth/2;
+                    if (x >= tank.x - tank.plateWidth && x < tank.x + tank.width) {
+                        // Ajuster la largeur pour la dernière plaque si nécessaire
+                        const plateWidth = Math.min(tank.plateWidth, tank.x + tank.width - x);
+
+                        // Couleur de la plaque avec variation
+                        const plateGradient = ctx.createLinearGradient(x, 0, x + plateWidth, 0);
+                        const brightness = 0.9 + Math.random() * 0.2;
+                        plateGradient.addColorStop(0, `rgba(139, 115, 85, ${brightness})`);
+                        plateGradient.addColorStop(0.5, `rgba(160, 130, 109, ${brightness})`);
+                        plateGradient.addColorStop(1, `rgba(139, 115, 85, ${brightness})`);
+
+                        ctx.fillStyle = plateGradient;
+                        ctx.fillRect(Math.max(tank.x, x), y, plateWidth, tank.plateHeight);
+
+                        // Texture de rouille
+                        for (let j = 0; j < 5; j++) {
+                            ctx.fillStyle = `rgba(205, 87, 0, ${Math.random() * 0.3})`;
+                            const rustX = Math.max(tank.x, x) + Math.random() * plateWidth;
+                            const rustY = y + Math.random() * tank.plateHeight;
+                            ctx.fillRect(rustX, rustY, 5 + Math.random() * 10, 5 + Math.random() * 10);
+                        }
+                    }
+                }
+                rowIndex++;
+            }
+
+            // Dessiner les soudures
+            for (let line of gameState.weldLines) {
+                ctx.strokeStyle = '#3a3a3a';
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.moveTo(line.x1, line.y1);
+                ctx.lineTo(line.x2, line.y2);
+                ctx.stroke();
+
+                // Effet de soudure
+                ctx.strokeStyle = '#5a5a5a';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(line.x1, line.y1);
+                ctx.lineTo(line.x2, line.y2);
+                ctx.stroke();
+            }
+
+            // Dessiner le trou d'homme
+            drawManHole();
+
+            // Bords du cylindre
+            ctx.strokeStyle = '#4a4a4a';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(tank.x, tank.y);
+            ctx.lineTo(tank.x, tank.y + tank.height);
+            ctx.moveTo(tank.x + tank.width, tank.y);
+            ctx.lineTo(tank.x + tank.width, tank.y + tank.height);
+            ctx.stroke();
+        }
+
+        function drawManHole() {
+            const tank = gameState.tank;
+            const holeX = tank.x + tank.width / 2;
+            const holeY = gameState.tank.manHoleY;
+            const holeRadius = 30;
+
+            // Cercle principal du trou d'homme
+            ctx.fillStyle = '#2a2a2a';
+            ctx.beginPath();
+            ctx.arc(holeX, holeY, holeRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Bordure métallique
+            ctx.strokeStyle = '#666';
+            ctx.lineWidth = 4;
+            ctx.stroke();
+
+            // Boulons
+            for (let i = 0; i < 8; i++) {
+                const angle = (i / 8) * Math.PI * 2;
+                const boltX = holeX + Math.cos(angle) * (holeRadius - 8);
+                const boltY = holeY + Math.sin(angle) * (holeRadius - 8);
+
+                ctx.fillStyle = '#444';
+                ctx.beginPath();
+                ctx.arc(boltX, boltY, 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Poignée
+            ctx.strokeStyle = '#888';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(holeX, holeY - 10, 15, Math.PI, 0);
+            ctx.stroke();
+        }
+
+        function drawCrawler() {
+            const crawler = gameState.crawler;
+
+            ctx.save();
+            ctx.translate(crawler.x + crawler.width/2, crawler.y + crawler.height/2);
+
+            // Rotation selon la direction
+            if (crawler.direction === 0) ctx.rotate(0); // Haut
+            else if (crawler.direction === 1) ctx.rotate(Math.PI/2); // Droite
+            else if (crawler.direction === 2) ctx.rotate(Math.PI); // Bas (marche arrière)
+            else if (crawler.direction === 3) ctx.rotate(-Math.PI/2); // Gauche
+
+            // Corps triangulaire du crawler
+            ctx.fillStyle = '#2a2a2a';
+            ctx.beginPath();
+            ctx.moveTo(-crawler.width/2, crawler.height/2);
+            ctx.lineTo(crawler.width/2, crawler.height/2);
+            ctx.lineTo(0, -crawler.height/2);
+            ctx.closePath();
+            ctx.fill();
+
+            // Détails métalliques
+            ctx.strokeStyle = '#444';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // Roue avant unique
+            ctx.fillStyle = '#1a1a1a';
+            ctx.beginPath();
+            ctx.arc(0, -crawler.height/2 + 10, 8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#333';
+            ctx.stroke();
+
+            // Deux roues arrière
+            ctx.fillStyle = '#1a1a1a';
+            ctx.beginPath();
+            ctx.arc(-crawler.width/3, crawler.height/2 - 10, 8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.arc(crawler.width/3, crawler.height/2 - 10, 8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            // Scanner/Capteur
+            ctx.fillStyle = '#666';
+            ctx.fillRect(-5, -5, 10, 10);
+
+            // LED d'état
+            ctx.fillStyle = gameState.crawler.isScanning ? '#00ff00' : '#ff0000';
+            ctx.beginPath();
+            ctx.arc(0, 0, 3, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.restore();
+        }
+
+        function drawCable() {
+            const crawler = gameState.crawler;
+            const reel = gameState.cable.reel;
+
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(crawler.x + crawler.width / 2, crawler.y + crawler.height);
+
+            // Câble avec effet de gravité
+            const midX = (crawler.x + reel.x) / 2;
+            const midY = Math.max(crawler.y, reel.y) + 50;
+
+            ctx.quadraticCurveTo(midX, midY, reel.x, reel.y);
+            ctx.stroke();
+
+            // Ombre du câble
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(crawler.x + crawler.width / 2 + 2, crawler.y + crawler.height + 2);
+            ctx.quadraticCurveTo(midX + 2, midY + 2, reel.x + 2, reel.y + 2);
+            ctx.stroke();
+        }
+
+        function drawReel() {
+            const reel = gameState.cable.reel;
+
+            // Base du touret
+            ctx.fillStyle = '#333';
+            ctx.fillRect(reel.x - 40, reel.y - 10, 80, 40);
+
+            // Tambour
+            ctx.fillStyle = '#444';
+            ctx.beginPath();
+            ctx.arc(reel.x, reel.y, 35, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.strokeStyle = '#222';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+
+            // Bobine de câble enroulée
+            ctx.strokeStyle = '#555';
+            ctx.lineWidth = 2;
+            for (let r = 15; r < 30; r += 3) {
+                ctx.beginPath();
+                ctx.arc(reel.x, reel.y, r, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            // Poignée
+            ctx.fillStyle = '#666';
+            ctx.fillRect(reel.x + 35, reel.y - 5, 20, 10);
+        }
+
+        function drawWater() {
+            const crawler = gameState.crawler;
+
+            // Jet d'eau principal
+            ctx.fillStyle = 'rgba(0, 150, 255, 0.4)';
+            ctx.beginPath();
+            ctx.moveTo(crawler.x + crawler.width / 2 - 8, crawler.y + crawler.height);
+            ctx.lineTo(crawler.x + crawler.width / 2 - 12, crawler.y + crawler.height + 50);
+            ctx.lineTo(crawler.x + crawler.width / 2 + 12, crawler.y + crawler.height + 50);
+            ctx.lineTo(crawler.x + crawler.width / 2 + 8, crawler.y + crawler.height);
+            ctx.closePath();
+            ctx.fill();
+
+            // Particules d'eau
+            for (let i = 0; i < 10; i++) {
+                const particleX = crawler.x + crawler.width / 2 + (Math.random() - 0.5) * 30;
+                const particleY = crawler.y + crawler.height + 20 + Math.random() * 30;
+                const size = 1 + Math.random() * 3;
+
+                ctx.fillStyle = `rgba(0, 150, 255, ${0.3 + Math.random() * 0.4})`;
+                ctx.beginPath();
+                ctx.arc(particleX, particleY, size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Éclaboussures
+            ctx.strokeStyle = 'rgba(0, 150, 255, 0.2)';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < 5; i++) {
+                const splashX = crawler.x + crawler.width / 2 + (Math.random() - 0.5) * 40;
+                const splashY = crawler.y + crawler.height + 40;
+                ctx.beginPath();
+                ctx.arc(splashX, splashY, 5 + Math.random() * 10, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+        }
+
+        function drawOperator() {
+            const baseY = canvas.height - 100;
+            const centerX = canvas.width / 2;
+
+            // Caisse en bois
+            ctx.fillStyle = '#654321';
+            ctx.fillRect(centerX - 180, baseY - 20, 120, 80);
+            ctx.strokeStyle = '#432818';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(centerX - 180, baseY - 20, 120, 80);
+
+            // Texture bois
+            ctx.strokeStyle = '#543216';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < 5; i++) {
+                ctx.beginPath();
+                ctx.moveTo(centerX - 180, baseY - 20 + i * 16);
+                ctx.lineTo(centerX - 60, baseY - 20 + i * 16);
+                ctx.stroke();
+            }
+
+            // Ordinateur portable ouvert
+            drawLaptop(centerX - 150, baseY - 60);
+
+            // Opérateur
+            // Jambes
+            ctx.fillStyle = '#ff8c00';
+            ctx.fillRect(centerX - 35, baseY - 30, 20, 30);
+            ctx.fillRect(centerX - 5, baseY - 30, 20, 30);
+
+            // Corps
+            ctx.fillStyle = '#ff8c00';
+            ctx.fillRect(centerX - 40, baseY - 70, 50, 40);
+
+            // Bandes réfléchissantes
+            ctx.fillStyle = '#ffff00';
+            ctx.fillRect(centerX - 40, baseY - 60, 50, 3);
+            ctx.fillRect(centerX - 40, baseY - 45, 50, 3);
+
+            // Bras vers l'ordinateur
+            ctx.save();
+            ctx.translate(centerX - 15, baseY - 50);
+            ctx.rotate(-Math.PI / 4);
+            ctx.fillStyle = '#ff8c00';
+            ctx.fillRect(0, 0, 35, 12);
+            ctx.restore();
+
+            // Main sur le clavier
+            ctx.fillStyle = '#fdbcb4';
+            ctx.beginPath();
+            ctx.arc(centerX - 110, baseY - 45, 8, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Casque de sécurité
+            ctx.fillStyle = '#ffff00';
+            ctx.beginPath();
+            ctx.arc(centerX - 15, baseY - 85, 18, Math.PI, 0);
+            ctx.closePath();
+            ctx.fill();
+
+            // Visière du casque
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.fillRect(centerX - 30, baseY - 85, 30, 5);
+
+            // Jugulaire
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(centerX - 33, baseY - 85);
+            ctx.quadraticCurveTo(centerX - 15, baseY - 75, centerX + 3, baseY - 85);
+            ctx.stroke();
+        }
+
+        function drawLaptop(x, y) {
+            // Écran
+            ctx.fillStyle = '#222';
+            ctx.fillRect(x, y - 30, 80, 50);
+            ctx.strokeStyle = '#666';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(x, y - 30, 80, 50);
+
+            // Écran allumé avec interface
+            ctx.fillStyle = '#000';
+            ctx.fillRect(x + 5, y - 25, 70, 40);
+
+            // Interface du logiciel
+            ctx.fillStyle = '#00ff00';
+            ctx.font = '5px monospace';
+            ctx.fillText('CRAWLER CONTROL v2.1', x + 8, y - 15);
+            ctx.fillText('Status: CONNECTED', x + 8, y - 5);
+            ctx.fillText('Thickness: SCANNING...', x + 8, y + 5);
+
+            // Graphique
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x + 10, y + 10);
+            ctx.lineTo(x + 20, y + 8);
+            ctx.lineTo(x + 30, y + 12);
+            ctx.lineTo(x + 40, y + 9);
+            ctx.lineTo(x + 50, y + 11);
+            ctx.stroke();
+
+            // Base/clavier
+            ctx.fillStyle = '#333';
+            ctx.fillRect(x - 10, y + 20, 100, 30);
+            ctx.strokeStyle = '#666';
+            ctx.strokeRect(x - 10, y + 20, 100, 30);
+
+            // Touches du clavier
+            ctx.fillStyle = '#444';
+            for (let i = 0; i < 10; i++) {
+                for (let j = 0; j < 3; j++) {
+                    ctx.fillRect(x - 5 + i * 9, y + 25 + j * 8, 7, 6);
+                }
+            }
+        }
+
+        // Contrôles
+        const keys = {};
+
+        window.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+
+            if (e.key === ' ' && gameState.atTop && !gameState.crawler.waterActive) {
+                e.preventDefault();
+                gameState.crawler.waterActive = true;
+                document.getElementById('warningLine').textContent = '> Eau activée! Appuyez sur S pour scanner';
+            }
+
+            if (e.key.toLowerCase() === 's' && gameState.crawler.waterActive && !gameState.crawler.isScanning) {
+                e.preventDefault();
+                gameState.crawler.isScanning = true;
+                document.getElementById('warningLine').textContent = '> Scan en cours...';
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+        });
+
+        // Mouvement du crawler
+        function handleMovement() {
+            if (gameState.gameOver) return;
+
+            const crawler = gameState.crawler;
+
+            if (keys['ArrowUp']) {
+                crawler.y -= crawler.speed;
+                crawler.direction = 0;
+            }
+            if (keys['ArrowDown']) {
+                crawler.y += crawler.speed;
+                crawler.direction = 2;
+            }
+            if (keys['ArrowLeft']) {
+                crawler.x -= crawler.speed;
+                crawler.direction = 3;
+            }
+            if (keys['ArrowRight']) {
+                crawler.x += crawler.speed;
+                crawler.direction = 1;
+            }
+        }
+
+        // Redémarrage
+        document.getElementById('restartBtn').addEventListener('click', () => {
+            location.reload();
+        });
+
+        // Boucle de jeu
+        function gameLoop() {
+            handleMovement();
+            update();
+            render();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Initialisation
+        generateWeldLines();
+        gameLoop();
+
+        // Redimensionnement de la fenêtre
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            // Recalculer les positions
+            gameState.tank.x = canvas.width / 2 - 250;
+            gameState.tank.y = 80;
+            gameState.tank.height = canvas.height - 280;
+            gameState.tank.manHoleY = gameState.tank.y + gameState.tank.height - (gameState.tank.height / 5);
+            gameState.cable.reel.x = canvas.width / 2 - 120;
+            gameState.cable.reel.y = canvas.height - 100;
+            generateWeldLines();
+        });
+    </script>
+</body>
+</html>
